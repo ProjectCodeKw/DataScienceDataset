@@ -1,0 +1,35 @@
+{
+  "english": {
+    "path": "C:\\Users\\User\\OneDrive\\Desktop\\Data Science\\DataScienceDataset\\FinalDatasets\\final_english_dataset.csv",
+    "total_rows": 5000,
+    "unique_games": 106,
+    "unique_genres": 19,
+    "source_counts": {
+      "Steam": 3351,
+      "Metacritic": 1649
+    },
+    "sentiment_counts": {
+      "positive": 2961,
+      "negative": 2039,
+      "neutral": 0,
+      "unknown": 0
+    }
+  },
+  "arabic": {
+    "path": "C:\\Users\\User\\OneDrive\\Desktop\\Data Science\\DataScienceDataset\\FinalDatasets\\combined_arabic_cleaned1_with_prices.csv",
+    "total_rows": 1528,
+    "unique_games": 775,
+    "unique_genres": 31,
+    "source_counts": {
+      "SaudiGamer": 1061,
+      "IGN": 311,
+      "ArabHardware": 156
+    },
+    "sentiment_counts": {
+      "positive": 587,
+      "negative": 630,
+      "neutral": 311,
+      "unknown": 0
+    }
+  }
+}

@@ -1,11 +1,19 @@
+#!/usr/bin/env python3
+"""
+Metacritic Scraper - Duplicate-Safe Version
+Gets 2,500 TOTAL reviews (loads existing 1,250 + scrapes 1,250 more)
+Checks for duplicates BEFORE adding reviews
+"""
+
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import time
 import re
+import os
 
 GAME_IDS = {
-    # Shooting (15 games - more indie focused)
+    # Shooting (15 games)
     412020: "Insurgency Sandstorm",
     1966720: "Lethal Company",
     553850: "HELLDIVERS 2",
@@ -22,7 +30,7 @@ GAME_IDS = {
     322500: "SUPERHOT",
     1284410: "Roboquest",
     
-    # RPG (16 games - more indie)
+    # RPG (16 games)
     1903340: "Clair Obscur Expedition 33",
     1086940: "Baldur's Gate 3",
     1145360: "Hades",
@@ -135,12 +143,45 @@ GAME_IDS = {
     1085660: "Destiny 2"
 }
 
+# ============================================================
+# DUPLICATE TRACKING
+# ============================================================
+existing_reviews = set()  # Stores (author, game_name) tuples
+existing_df = None
+
+def load_existing_reviews():
+    """Load existing metacritic_reviews.csv to avoid duplicates"""
+    global existing_reviews, existing_df
+    
+    if os.path.exists('metacritic_reviews.csv'):
+        try:
+            existing_df = pd.read_csv('metacritic_reviews.csv')
+            print(f"✓ Loaded {len(existing_df):,} existing reviews")
+            
+            # Build duplicate detection set
+            for _, row in existing_df.iterrows():
+                author = str(row.get('author', 'Anonymous'))
+                game = str(row.get('game_name', ''))
+                existing_reviews.add((author, game))
+            
+            print(f"✓ Tracking {len(existing_reviews):,} (author, game) pairs")
+            return len(existing_df)
+        except Exception as e:
+            print(f"⚠️  Error loading existing file: {e}")
+            return 0
+    else:
+        print("ℹ️  No existing file found, starting fresh")
+        return 0
+
+def is_duplicate(author, game_name):
+    """Check if (author, game) already exists"""
+    return (author, game_name) in existing_reviews
+
 def search_metacritic(game_name):
     """Search for game on Metacritic and return PC game URL"""
     search_name = game_name.lower().replace(' ', '-').replace("'", "")
     search_name = re.sub(r'[^a-z0-9-]', '', search_name)
     
-    # New Metacritic URL format
     url = f"https://www.metacritic.com/game/{search_name}/"
     
     headers = {
@@ -156,15 +197,15 @@ def search_metacritic(game_name):
     
     return None
 
-def scrape_reviews_by_sentiment(game_url, sentiment, num_reviews):
-    """Scrape positive or negative reviews from Metacritic"""
+def scrape_reviews_by_sentiment(game_url, game_name, sentiment, num_reviews):
+    """Scrape reviews, skipping duplicates"""
     reviews = []
+    duplicates_skipped = 0
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     
-    # Use the correct URL format with platform parameter
     if '?' not in game_url:
         reviews_url = game_url + 'user-reviews/?platform=pc'
     else:
@@ -173,17 +214,14 @@ def scrape_reviews_by_sentiment(game_url, sentiment, num_reviews):
     try:
         response = requests.get(reviews_url, headers=headers, timeout=10)
         if response.status_code != 200:
-            print(f"  Status code: {response.status_code}")
-            return reviews
+            return reviews, duplicates_skipped
             
         soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Find all review divs - using exact class name
         review_divs = soup.find_all('div', class_='c-siteReview')
         
         for review in review_divs:
             try:
-                # Extract score - it's in a span inside c-siteReviewScore
+                # Extract score
                 score_div = review.find('div', class_='c-siteReviewScore')
                 if not score_div:
                     continue
@@ -198,13 +236,13 @@ def scrape_reviews_by_sentiment(game_url, sentiment, num_reviews):
                 except:
                     continue
                 
-                # Filter by sentiment: positive (7-10) or negative (0-4)
+                # Filter by sentiment
                 if sentiment == "positive" and score < 7:
                     continue
                 if sentiment == "negative" and score > 4:
                     continue
                 
-                # Extract review text - c-siteReview_quote > span
+                # Extract review text
                 quote_div = review.find('div', class_='c-siteReview_quote')
                 if not quote_div:
                     continue
@@ -215,15 +253,19 @@ def scrape_reviews_by_sentiment(game_url, sentiment, num_reviews):
                 
                 review_text = text_span.get_text(strip=True)
                 
-                # Only reviews longer than 10 characters
                 if len(review_text) <= 10:
                     continue
                 
-                # Extract author - c-siteReviewHeader_username
+                # Extract author
                 author_link = review.find('a', class_='c-siteReviewHeader_username')
                 author = author_link.get_text(strip=True) if author_link else 'Anonymous'
                 
-                # Extract date - c-siteReview_reviewDate
+                # ⭐ CHECK FOR DUPLICATE ⭐
+                if is_duplicate(author, game_name):
+                    duplicates_skipped += 1
+                    continue  # Skip this review
+                
+                # Extract date
                 date_div = review.find('div', class_='c-siteReview_reviewDate')
                 date = date_div.get_text(strip=True) if date_div else 'N/A'
                 
@@ -235,71 +277,130 @@ def scrape_reviews_by_sentiment(game_url, sentiment, num_reviews):
                     'date': date
                 })
                 
+                # Add to tracking set
+                existing_reviews.add((author, game_name))
+                
                 if len(reviews) >= num_reviews:
                     break
                     
-            except Exception as e:
+            except Exception:
                 continue
                 
     except Exception as e:
-        print(f"  Error scraping: {e}")
+        print(f"  Error: {e}")
     
-    return reviews
+    return reviews, duplicates_skipped
 
 def main():
-    TOTAL_REVIEWS = 2500
+    print("="*70)
+    print("METACRITIC SCRAPER - DUPLICATE-SAFE")
+    print("="*70)
+    
+    # Load existing reviews
+    existing_count = load_existing_reviews()
+    
+    TARGET_TOTAL = 2500
+    TARGET_NEW = TARGET_TOTAL - existing_count
+    
+    print(f"\nTarget:")
+    print(f"  Existing:  {existing_count:,}")
+    print(f"  Goal:      {TARGET_TOTAL:,}")
+    print(f"  Need:      {TARGET_NEW:,} NEW reviews")
+    print("="*70)
+    print()
+    
+    if TARGET_NEW <= 0:
+        print("✓ Already have enough reviews!")
+        return
+    
     num_games = len(GAME_IDS)
-    reviews_per_game = TOTAL_REVIEWS // num_games
+    reviews_per_game = TARGET_NEW // num_games
     positive_per_game = reviews_per_game // 2
     negative_per_game = reviews_per_game - positive_per_game
     
-    print(f"Target: {TOTAL_REVIEWS} total reviews from {num_games} games")
-    print(f"Per game: {positive_per_game} positive + {negative_per_game} negative\n")
+    print(f"Strategy: ~{reviews_per_game} per game ({positive_per_game} pos + {negative_per_game} neg)\n")
     
-    all_reviews = []
+    all_new_reviews = []
+    total_duplicates = 0
     
-    for app_id, game_name in GAME_IDS.items():
-        print(f"[{game_name}]")
+    for i, (app_id, game_name) in enumerate(GAME_IDS.items(), 1):
+        print(f"[{i}/{num_games}] {game_name}")
         
-        # Find game on Metacritic
         game_url = search_metacritic(game_name)
         
         if not game_url:
-            print(f"  Not found on Metacritic")
+            print(f"  ✗ Not found")
             continue
         
-        # Get positive reviews (score 7-10)
-        pos_reviews = scrape_reviews_by_sentiment(game_url, "positive", positive_per_game)
-        print(f"  + {len(pos_reviews)} positive")
+        # Scrape positive
+        pos_reviews, pos_dups = scrape_reviews_by_sentiment(
+            game_url, game_name, "positive", positive_per_game
+        )
+        print(f"  + {len(pos_reviews)} positive (skipped {pos_dups} dups)")
         
-        # Get negative reviews (score 0-4)
-        neg_reviews = scrape_reviews_by_sentiment(game_url, "negative", negative_per_game)
-        print(f"  - {len(neg_reviews)} negative")
+        # Scrape negative
+        neg_reviews, neg_dups = scrape_reviews_by_sentiment(
+            game_url, game_name, "negative", negative_per_game
+        )
+        print(f"  - {len(neg_reviews)} negative (skipped {neg_dups} dups)")
         
-        # Add game metadata
+        total_duplicates += (pos_dups + neg_dups)
+        
+        # Add metadata
         for review in pos_reviews + neg_reviews:
             review["game_name"] = game_name
             review["app_id"] = app_id
         
-        all_reviews.extend(pos_reviews + neg_reviews)
-        print(f"  Total so far: {len(all_reviews)}\n")
+        all_new_reviews.extend(pos_reviews + neg_reviews)
+        print(f"  Total NEW: {len(all_new_reviews):,} | Dups skipped: {total_duplicates:,}\n")
         
         time.sleep(2)
+        
+        if len(all_new_reviews) >= TARGET_NEW:
+            print(f"✓ Reached target!")
+            break
     
-    df = pd.DataFrame(all_reviews)
+    # Combine with existing
+    print("="*70)
+    print("FINALIZING")
+    print("="*70)
     
-    columns = [
-        "game_name", "app_id", "author", "review_text", "user_score", 
-        "voted_up", "date"
-    ]
-    df = df[columns]
+    if len(all_new_reviews) > 0:
+        df_new = pd.DataFrame(all_new_reviews)
+        
+        columns = [
+            "game_name", "app_id", "author", "review_text", "user_score", 
+            "voted_up", "date"
+        ]
+        df_new = df_new[columns]
+        
+        # Combine
+        if existing_df is not None:
+            df_final = pd.concat([existing_df, df_new], ignore_index=True)
+        else:
+            df_final = df_new
+        
+        print(f"\nNew reviews scraped: {len(df_new):,}")
+        print(f"Combined total:      {len(df_final):,}")
+        print(f"Duplicates skipped:  {total_duplicates:,}")
+        
+        # Stats
+        pos_count = df_final["voted_up"].sum()
+        neg_count = len(df_final) - pos_count
+        
+        print(f"\nFinal balance:")
+        print(f"  Positive: {pos_count:,} ({pos_count/len(df_final)*100:.1f}%)")
+        print(f"  Negative: {neg_count:,} ({neg_count/len(df_final)*100:.1f}%)")
+        
+        # Save
+        output_file = "metacritic_reviews_2500.csv"
+        df_final.to_csv(output_file, index=False, encoding="utf-8")
+        print(f"\n✓ Saved to {output_file}")
+        
+    else:
+        print("\n✗ No new reviews collected (all were duplicates)")
     
-    pos_count = df["voted_up"].sum()
-    neg_count = len(df) - pos_count
-    print(f"\nFinal: {len(df)} reviews ({pos_count} positive, {neg_count} negative)")
-    
-    df.to_csv("metacritic_reviews.csv", index=False, encoding="utf-8")
-    print(f"Saved to metacritic_reviews.csv")
+    print("="*70)
 
 if __name__ == "__main__":
     main()
